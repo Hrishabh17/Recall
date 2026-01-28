@@ -25,7 +25,9 @@ export function clipsToListItems(clips: Clip[]): ListItem[] {
   return clips.map((clip) => ({
     id: clip.id,
     type: "clip" as const,
-    title: truncate(clip.content.split("\n")[0], 60),
+    title: clip.type === "image" 
+      ? `Image (${clip.content})` 
+      : truncate(clip.content.split("\n")[0], 60),
     subtitle: formatTimeAgo(clip.createdAt),
     content: clip.content,
     data: clip,

@@ -6,6 +6,8 @@ import { v4 as uuid } from "uuid";
 export interface Clip {
   id: string;
   content: string;
+  type: "text" | "image"; // Type of clip: text or image
+  imageData?: string; // Base64 encoded image data (for image clips)
   createdAt: string;
 }
 
@@ -27,7 +29,10 @@ export interface Task {
   remindAt: string;
   completed: boolean;
   notified: boolean;
-  recurringInterval: string | null; // e.g., "5m", "1h", "1d", null for no recurring
+  recurringInterval: string | null; // e.g., "5m", "1h", "1d", "weekly:mon", "monthly:15", null for no recurring
+  priority: "low" | "medium" | "high" | "urgent";
+  category: string;
+  snoozedUntil: string | null;
   createdAt: string;
 }
 
@@ -47,6 +52,8 @@ export class Database {
       CREATE TABLE IF NOT EXISTS clips (
         id TEXT PRIMARY KEY,
         content TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'text',
+        image_data TEXT,
         created_at TEXT NOT NULL
       );
 
@@ -69,6 +76,9 @@ export class Database {
         completed INTEGER NOT NULL DEFAULT 0,
         notified INTEGER NOT NULL DEFAULT 0,
         recurring_interval TEXT,
+        priority TEXT DEFAULT 'medium',
+        category TEXT DEFAULT '',
+        snoozed_until TEXT,
         created_at TEXT NOT NULL
       );
 
@@ -83,26 +93,62 @@ export class Database {
     } catch (e) {
       // Column already exists, ignore error
     }
+    
+    // Migration: Add priority column if it doesn't exist
+    try {
+      this.db.exec(`ALTER TABLE tasks ADD COLUMN priority TEXT DEFAULT 'medium'`);
+    } catch (e) {
+      // Column already exists, ignore error
+    }
+    
+    // Migration: Add category column if it doesn't exist
+    try {
+      this.db.exec(`ALTER TABLE tasks ADD COLUMN category TEXT DEFAULT ''`);
+    } catch (e) {
+      // Column already exists, ignore error
+    }
+    
+    // Migration: Add snoozed_until column if it doesn't exist
+    try {
+      this.db.exec(`ALTER TABLE tasks ADD COLUMN snoozed_until TEXT`);
+    } catch (e) {
+      // Column already exists, ignore error
+    }
+    
+    // Migration: Add type and image_data columns to clips if they don't exist
+    try {
+      this.db.exec(`ALTER TABLE clips ADD COLUMN type TEXT DEFAULT 'text'`);
+    } catch (e) {
+      // Column already exists, ignore error
+    }
+    try {
+      this.db.exec(`ALTER TABLE clips ADD COLUMN image_data TEXT`);
+    } catch (e) {
+      // Column already exists, ignore error
+    }
   }
 
   // Clips
-  addClip(content: string, maxClips: number = 100): Clip {
+  addClip(content: string, maxClips: number = 100, type: "text" | "image" = "text", imageData?: string): Clip {
     const id = uuid();
     const now = new Date().toISOString();
 
     // Check for duplicate (don't add if same as most recent)
+    // For images, compare image data; for text, compare content
     const recent = this.db.prepare(
-      "SELECT content FROM clips ORDER BY created_at DESC LIMIT 1"
-    ).get() as { content: string } | undefined;
+      "SELECT content, type, image_data FROM clips ORDER BY created_at DESC LIMIT 1"
+    ).get() as { content: string; type: string; image_data?: string } | undefined;
 
-    if (recent?.content === content) {
-      return { id: "", content, createdAt: now };
+    if (type === "image" && recent?.type === "image" && recent?.image_data === imageData) {
+      return { id: "", content, type: "image", imageData, createdAt: now };
+    } else if (type === "text" && recent?.content === content && recent?.type === "text") {
+      return { id: "", content, type: "text", createdAt: now };
     }
 
     // Insert new clip
     this.db.prepare(
-      "INSERT INTO clips (id, content, created_at) VALUES (?, ?, ?)"
-    ).run(id, content, now);
+      "INSERT INTO clips (id, content, type, image_data, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).run(id, content, type, imageData || null, now);
 
     // Enforce max limit
     const count = this.db.prepare("SELECT COUNT(*) as count FROM clips").get() as { count: number };
@@ -114,20 +160,34 @@ export class Database {
       `).run(count.count - maxClips);
     }
 
-    return { id, content, createdAt: now };
+    return { id, content, type, imageData, createdAt: now };
   }
 
   getClips(): Clip[] {
     const rows = this.db.prepare(
-      "SELECT id, content, created_at as createdAt FROM clips ORDER BY created_at DESC"
+      "SELECT id, content, type, image_data as imageData, created_at as createdAt FROM clips ORDER BY created_at DESC"
     ).all();
-    return rows as Clip[];
+    return (rows as any[]).map(r => ({
+      id: r.id,
+      content: r.content,
+      type: (r.type || "text") as "text" | "image",
+      imageData: r.imageData || undefined,
+      createdAt: r.createdAt,
+    }));
   }
 
   getClipById(id: string): Clip | undefined {
-    return this.db.prepare(
-      "SELECT id, content, created_at as createdAt FROM clips WHERE id = ?"
-    ).get(id) as Clip | undefined;
+    const row = this.db.prepare(
+      "SELECT id, content, type, image_data as imageData, created_at as createdAt FROM clips WHERE id = ?"
+    ).get(id) as any;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      content: row.content,
+      type: (row.type || "text") as "text" | "image",
+      imageData: row.imageData || undefined,
+      createdAt: row.createdAt,
+    };
   }
 
   deleteClip(id: string): void {
@@ -183,6 +243,41 @@ export class Database {
     this.db.prepare("DELETE FROM scripts WHERE id = ?").run(id);
   }
 
+  /**
+   * Remove a tag from all scripts that contain it
+   * This permanently deletes the tag from the system
+   */
+  removeTagFromAllScripts(tagToRemove: string): number {
+    const scripts = this.getScripts();
+    let updatedCount = 0;
+    
+    for (const script of scripts) {
+      if (script.tags && script.tags.trim().length > 0) {
+        // Parse tags, remove the target tag, and reconstruct
+        const originalTags = script.tags.split(",").map(t => t.trim()).filter(t => t.length > 0);
+        const tagToRemoveLower = tagToRemove.trim().toLowerCase();
+        
+        // Check if the tag exists in the script
+        const hasTag = originalTags.some(t => t.toLowerCase() === tagToRemoveLower);
+        
+        if (hasTag) {
+          // Remove the tag (case-insensitive)
+          const newTagsArray = originalTags.filter(t => t.toLowerCase() !== tagToRemoveLower);
+          const newTags = newTagsArray.length > 0 ? newTagsArray.join(", ") : "";
+          
+          const now = new Date().toISOString();
+          this.db.prepare(`
+            UPDATE scripts SET tags = ?, updated_at = ?
+            WHERE id = ?
+          `).run(newTags, now, script.id);
+          updatedCount++;
+        }
+      }
+    }
+    
+    return updatedCount;
+  }
+
   cleanExpiredScripts(): void {
     const now = new Date().toISOString();
     this.db.prepare(
@@ -191,21 +286,41 @@ export class Database {
   }
 
   // Tasks
-  addTask(content: string, title: string, remindAt: string, recurringInterval: string | null = null): Task {
+  addTask(
+    content: string, 
+    title: string, 
+    remindAt: string, 
+    recurringInterval: string | null = null,
+    priority: "low" | "medium" | "high" | "urgent" = "medium",
+    category: string = ""
+  ): Task {
     const id = uuid();
     const now = new Date().toISOString();
     
     this.db.prepare(`
-      INSERT INTO tasks (id, content, title, remind_at, completed, notified, recurring_interval, created_at)
-      VALUES (?, ?, ?, ?, 0, 0, ?, ?)
-    `).run(id, content, title, remindAt, recurringInterval, now);
+      INSERT INTO tasks (id, content, title, remind_at, completed, notified, recurring_interval, priority, category, created_at)
+      VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, ?)
+    `).run(id, content, title, remindAt, recurringInterval, priority, category, now);
     
-    return { id, content, title, remindAt, completed: false, notified: false, recurringInterval, createdAt: now };
+    return { 
+      id, 
+      content, 
+      title, 
+      remindAt, 
+      completed: false, 
+      notified: false, 
+      recurringInterval, 
+      priority,
+      category,
+      snoozedUntil: null,
+      createdAt: now 
+    };
   }
 
   getTasks(): Task[] {
     const rows = this.db.prepare(`
-      SELECT id, content, title, remind_at as remindAt, completed, notified, recurring_interval as recurringInterval, created_at as createdAt
+      SELECT id, content, title, remind_at as remindAt, completed, notified, recurring_interval as recurringInterval, 
+             priority, category, snoozed_until as snoozedUntil, created_at as createdAt
       FROM tasks WHERE completed = 0 ORDER BY remind_at ASC
     `).all();
     return (rows as any[]).map(r => ({
@@ -213,21 +328,32 @@ export class Database {
       completed: !!r.completed,
       notified: !!r.notified,
       recurringInterval: r.recurringInterval || null,
+      priority: r.priority || "medium",
+      category: r.category || "",
+      snoozedUntil: r.snoozedUntil || null,
     }));
   }
 
   getDueTasks(): Task[] {
     const now = new Date().toISOString();
     const rows = this.db.prepare(`
-      SELECT id, content, title, remind_at as remindAt, completed, notified, recurring_interval as recurringInterval, created_at as createdAt
-      FROM tasks WHERE completed = 0 AND notified = 0 AND remind_at <= ?
+      SELECT id, content, title, remind_at as remindAt, completed, notified, recurring_interval as recurringInterval,
+             priority, category, snoozed_until as snoozedUntil, created_at as createdAt
+      FROM tasks 
+      WHERE completed = 0 
+        AND notified = 0 
+        AND remind_at <= ?
+        AND (snoozed_until IS NULL OR snoozed_until <= ?)
       ORDER BY remind_at ASC
-    `).all(now);
+    `).all(now, now);
     return (rows as any[]).map(r => ({
       ...r,
       completed: !!r.completed,
       notified: !!r.notified,
       recurringInterval: r.recurringInterval || null,
+      priority: r.priority || "medium",
+      category: r.category || "",
+      snoozedUntil: r.snoozedUntil || null,
     }));
   }
 
@@ -253,9 +379,28 @@ export class Database {
     this.db.prepare("UPDATE tasks SET completed = 1 WHERE id = ?").run(id);
   }
 
-  updateTask(id: string, title: string, remindAt: string, recurringInterval: string | null = null): void {
+  updateTask(
+    id: string, 
+    title: string, 
+    remindAt: string, 
+    recurringInterval: string | null = null,
+    priority: "low" | "medium" | "high" | "urgent" = "medium",
+    category: string = ""
+  ): void {
     // Reset notified flag when updating remind time
-    this.db.prepare("UPDATE tasks SET title = ?, remind_at = ?, recurring_interval = ?, notified = 0 WHERE id = ?").run(title, remindAt, recurringInterval, id);
+    this.db.prepare(`
+      UPDATE tasks 
+      SET title = ?, remind_at = ?, recurring_interval = ?, priority = ?, category = ?, notified = 0 
+      WHERE id = ?
+    `).run(title, remindAt, recurringInterval, priority, category, id);
+  }
+  
+  snoozeTask(id: string, snoozedUntil: string): void {
+    this.db.prepare("UPDATE tasks SET snoozed_until = ? WHERE id = ?").run(snoozedUntil, id);
+  }
+  
+  clearSnooze(id: string): void {
+    this.db.prepare("UPDATE tasks SET snoozed_until = NULL WHERE id = ?").run(id);
   }
 
   deleteTask(id: string): void {

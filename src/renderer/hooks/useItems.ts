@@ -16,8 +16,8 @@ export function useItems() {
   const [filter, setFilter] = useState<Filter>("all");
   const [searchFilters, setSearchFilters] = useState<SearchFilters>({
     contentType: null,
-    tag: null,
-    scriptType: null,
+    tags: [],
+    scriptTypes: [],
     dateRange: null,
   } as SearchFilters);
   const [searchIndex, setSearchIndex] = useState<Fuse<ListItem> | null>(null);
@@ -131,13 +131,27 @@ export function useItems() {
     await loadItems();
   }, [loadItems]);
 
-  const addTask = useCallback(async (content: string, title: string, remindAt: string, recurringInterval?: string | null) => {
-    await window.api.addTask(content, title, remindAt, recurringInterval);
+  const addTask = useCallback(async (
+    content: string, 
+    title: string, 
+    remindAt: string, 
+    recurringInterval?: string | null,
+    priority?: "low" | "medium" | "high" | "urgent",
+    category?: string
+  ) => {
+    await window.api.addTask(content, title, remindAt, recurringInterval, priority, category);
     await loadItems();
   }, [loadItems]);
 
-  const updateTask = useCallback(async (id: string, title: string, remindAt: string, recurringInterval?: string | null) => {
-    await window.api.updateTask(id, title, remindAt, recurringInterval);
+  const updateTask = useCallback(async (
+    id: string, 
+    title: string, 
+    remindAt: string, 
+    recurringInterval?: string | null,
+    priority?: "low" | "medium" | "high" | "urgent",
+    category?: string
+  ) => {
+    await window.api.updateTask(id, title, remindAt, recurringInterval, priority, category);
     await loadItems();
   }, [loadItems]);
 
@@ -146,9 +160,25 @@ export function useItems() {
     await loadItems();
   }, [loadItems]);
 
+  const snoozeTask = useCallback(async (id: string, snoozedUntil: string) => {
+    await window.api.snoozeTask(id, snoozedUntil);
+    await loadItems();
+  }, [loadItems]);
+
+  const clearSnooze = useCallback(async (id: string) => {
+    await window.api.clearSnooze(id);
+    await loadItems();
+  }, [loadItems]);
+
   const clearClips = useCallback(async () => {
     await window.api.clearClips();
     await loadItems();
+  }, [loadItems]);
+
+  const removeTagFromAll = useCallback(async (tag: string) => {
+    const result = await window.api.removeTagFromAll(tag);
+    await loadItems();
+    return result;
   }, [loadItems]);
 
   return {
@@ -171,7 +201,10 @@ export function useItems() {
     addTask,
     updateTask,
     completeTask,
+    snoozeTask,
+    clearSnooze,
     clearClips,
+    removeTagFromAll,
     refresh: loadItems,
   };
 }

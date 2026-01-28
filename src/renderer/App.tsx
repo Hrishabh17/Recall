@@ -5,6 +5,7 @@ import { useSettings } from "@/hooks/useSettings";
 import { SearchBar } from "@/components/SearchBar";
 import { FilterBar } from "@/components/FilterBar";
 import { SearchFilters } from "@/components/SearchFilters";
+import { TagSelector } from "@/components/TagSelector";
 import { ItemList } from "@/components/ItemList";
 import { PreviewPane } from "@/components/PreviewPane";
 import { ScriptForm } from "@/components/ScriptForm";
@@ -38,7 +39,10 @@ export default function App() {
     addTask,
     updateTask,
     completeTask,
+    snoozeTask,
+    clearSnooze,
     clearClips,
+    removeTagFromAll,
   } = useItems();
 
   const { settings, updateSettings } = useSettings();
@@ -51,6 +55,7 @@ export default function App() {
   const [itemToRemind, setItemToRemind] = useState<ListItem | null>(null);
   const [taskToEdit, setTaskToEdit] = useState<Task | null>(null);
   const [overdueCount, setOverdueCount] = useState(0);
+  const [openDropdown, setOpenDropdown] = useState<"tag" | "type" | null>(null);
 
   const fontClass = fontSizeClasses[settings.fontSize] || "text-xs";
 
@@ -74,7 +79,7 @@ export default function App() {
 
   // Reset to All tab when window opens
   useEffect(() => {
-    const unsubscribe = window.api.onWindowShown(async () => {
+    const unsubscribeShown = window.api.onWindowShown(async () => {
       setFilter("all");
       setView("list");
       setSelectedIndex(0);
@@ -83,8 +88,8 @@ export default function App() {
       // Reset all filters when window opens
       setSearchFilters({
         contentType: null,
-        tag: null,
-        scriptType: null,
+        tags: [],
+        scriptTypes: [],
         dateRange: null,
       });
       
@@ -93,7 +98,22 @@ export default function App() {
       setOverdueCount(count);
     });
 
-    return unsubscribe;
+      // Reset filters when window closes
+      const unsubscribeHidden = window.api.onWindowHidden(() => {
+        setSearchFilters({
+          contentType: null,
+          tags: [],
+          scriptTypes: [],
+          dateRange: null,
+        });
+        // Close all dropdowns when window closes
+        setOpenDropdown(null);
+      });
+
+    return () => {
+      unsubscribeShown();
+      unsubscribeHidden();
+    };
   }, [setFilter, setSearchQuery, setSearchFilters]);
 
   // Load overdue count on mount and periodically
@@ -188,8 +208,17 @@ export default function App() {
   const selectedItem = items[selectedIndex] || null;
 
   const handleCopy = useCallback(async (item: ListItem) => {
-    await window.api.copyToClipboard(item.content);
-    showToast("copy", "Copied to clipboard");
+    // Check if this is an image clip
+    const clipData = item.type === "clip" ? (item.data as any) : null;
+    if (clipData?.type === "image" && clipData?.imageData) {
+      // Copy image to clipboard
+      await window.api.copyToClipboard({ type: "image", imageData: clipData.imageData });
+      showToast("copy", "Image copied to clipboard");
+    } else {
+      // Copy text to clipboard
+      await window.api.copyToClipboard(item.content);
+      showToast("copy", "Copied to clipboard");
+    }
   }, [showToast]);
 
   const handlePin = useCallback((item: ListItem) => {
@@ -221,8 +250,15 @@ export default function App() {
     }
   }, []);
 
-  const handleSaveReminder = useCallback(async (content: string, title: string, remindAt: string, recurringInterval?: string | null) => {
-    await addTask(content, title, remindAt, recurringInterval);
+  const handleSaveReminder = useCallback(async (
+    content: string, 
+    title: string, 
+    remindAt: string, 
+    recurringInterval?: string | null,
+    priority?: "low" | "medium" | "high" | "urgent",
+    category?: string
+  ) => {
+    await addTask(content, title, remindAt, recurringInterval, priority, category);
     setView("list");
     setItemToRemind(null);
     setTaskToEdit(null);
@@ -233,8 +269,15 @@ export default function App() {
     setOverdueCount(count);
   }, [addTask, showToast]);
 
-  const handleUpdateReminder = useCallback(async (id: string, title: string, remindAt: string, recurringInterval?: string | null) => {
-    await updateTask(id, title, remindAt, recurringInterval);
+  const handleUpdateReminder = useCallback(async (
+    id: string, 
+    title: string, 
+    remindAt: string, 
+    recurringInterval?: string | null,
+    priority?: "low" | "medium" | "high" | "urgent",
+    category?: string
+  ) => {
+    await updateTask(id, title, remindAt, recurringInterval, priority, category);
     setView("list");
     setItemToRemind(null);
     setTaskToEdit(null);
@@ -310,6 +353,7 @@ export default function App() {
     return (
       <div className={`h-screen flex flex-col ${glassStyle} rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl ${fontClass}`}>
         <ScriptForm
+          availableTags={availableTags}
           script={editingScript}
           initialContent={clipToPin?.content}
           onSave={handleSaveScript}
@@ -333,48 +377,99 @@ export default function App() {
 
   return (
     <div className={`h-screen flex flex-col ${glassStyle} rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl animate-scale-in ${fontClass}`}>
-      {/* Search Bar */}
-      <SearchBar
-        value={searchQuery}
-        onChange={setSearchQuery}
-        placeholder="Search clipboard & scripts..."
-        resultCount={searchQuery ? items.length : undefined}
-      />
+      {/* First Row: Search + Tag Selector + Script Type Filters */}
+      <div className="px-4 pt-4 pb-2">
+        <div className="flex items-center gap-2">
+          {/* Search Bar - Takes remaining space */}
+          <div className="flex-1 min-w-0">
+            <SearchBar
+              value={searchQuery}
+              onChange={setSearchQuery}
+              placeholder="Search clipboard & scripts..."
+              resultCount={searchQuery ? items.length : undefined}
+            />
+          </div>
 
-      {/* Advanced Search Filters */}
-      <div className="px-4 pb-2">
-        <SearchFilters
-          filters={searchFilters}
-          onChange={setSearchFilters}
-          availableTags={availableTags}
-        />
+          {/* Tag Selector Dropdown */}
+          {availableTags.length > 0 && (
+            <div className="flex-shrink-0">
+              <TagSelector
+                selectedTags={searchFilters.tags || []}
+                availableTags={availableTags}
+                onTagSelect={(tags) => {
+                  setSearchFilters({
+                    ...searchFilters,
+                    tags: tags,
+                  });
+                }}
+                onTagDelete={async (tag) => {
+                  // Show confirmation warning
+                  const confirmed = window.confirm(
+                    `Are you sure you want to permanently delete the tag "${tag}"?\n\nThis will remove the tag from all scripts. This action cannot be undone.`
+                  );
+                  if (!confirmed) return;
+                  
+                  const result = await removeTagFromAll(tag);
+                  if (result?.success) {
+                    showToast("delete", `Tag "${tag}" removed from ${result.updatedScripts} script(s)`);
+                    // Remove tag from selected tags if it was selected
+                    if (searchFilters.tags?.includes(tag)) {
+                      setSearchFilters({ 
+                        ...searchFilters, 
+                        tags: searchFilters.tags.filter(t => t !== tag)
+                      });
+                    }
+                  }
+                }}
+                openDropdown={openDropdown}
+                onDropdownToggle={(type) => setOpenDropdown(type === openDropdown ? null : type)}
+              />
+            </div>
+          )}
+
+          {/* Script Type Filters */}
+          <div className="flex-shrink-0">
+            <SearchFilters
+              filters={searchFilters}
+              onChange={setSearchFilters}
+              availableTags={availableTags}
+              openDropdown={openDropdown}
+              onDropdownToggle={(type) => setOpenDropdown(type === openDropdown ? null : type)}
+            />
+          </div>
+        </div>
       </div>
 
-      {/* Filter + Actions Bar */}
-      <div className="flex items-center justify-between px-4 pb-2">
-        <FilterBar
-          filter={filter}
-          onChange={setFilter}
-          clipCount={clips.length}
-          scriptCount={scripts.length}
-          taskCount={tasks.length}
-          overdueCount={overdueCount}
-        />
-        <div className="flex items-center gap-1">
-          <button
-            onClick={handleNewScript}
-            className="p-2 rounded-lg text-white/50 hover:text-white hover:bg-white/[0.06] transition-colors"
-            title="New Script (⌘N)"
-          >
-            <Plus className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => setView("settings")}
-            className="p-2 rounded-lg text-white/50 hover:text-white hover:bg-white/[0.06] transition-colors"
-            title="Settings (⌘,)"
-          >
-            <Sliders className="w-4 h-4" />
-          </button>
+      {/* Second Row: Filter Tabs + Actions */}
+      <div className="px-4 pb-2">
+        <div className="flex items-center justify-between">
+          {/* Filter Tabs */}
+          <FilterBar
+            filter={filter}
+            onChange={setFilter}
+            clipCount={clips.length}
+            scriptCount={scripts.length}
+            taskCount={tasks.length}
+            overdueCount={overdueCount}
+          />
+
+          {/* Actions Button */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleNewScript}
+              className="p-2 rounded-lg text-white/50 hover:text-white hover:bg-white/[0.06] transition-colors"
+              title="New Script (⌘N)"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setView("settings")}
+              className="p-2 rounded-lg text-white/50 hover:text-white hover:bg-white/[0.06] transition-colors"
+              title="Settings (⌘,)"
+            >
+              <Sliders className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -397,10 +492,30 @@ export default function App() {
           onCopy={handleCopy}
           onPin={handlePin}
           onDelete={handleDelete}
+          onTagClick={(tag) => {
+            const currentTags = searchFilters.tags || [];
+            const isSelected = currentTags.includes(tag);
+            setSearchFilters({
+              ...searchFilters,
+              tags: isSelected 
+                ? currentTags.filter(t => t !== tag)
+                : [...currentTags, tag],
+            });
+          }}
           onEdit={handleEdit}
           onRemind={handleRemind}
           onComplete={handleCompleteTask}
           onEditTask={handleEditTask}
+          onSnooze={async (item, minutes) => {
+            if (item.type === "task") {
+              const taskData = item.data as Task;
+              const snoozedUntil = new Date(Date.now() + minutes * 60 * 1000).toISOString();
+              await snoozeTask(taskData.id, snoozedUntil);
+              showToast("save", `Reminder snoozed for ${minutes} minutes`);
+              const count = await window.api.getOverdueCount();
+              setOverdueCount(count);
+            }
+          }}
           fontSize={settings.fontSize}
           filter={filter}
         />

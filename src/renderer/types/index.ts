@@ -1,6 +1,8 @@
 export interface Clip {
   id: string;
   content: string;
+  type: "text" | "image";
+  imageData?: string; // Base64 encoded image data (for image clips)
   createdAt: string;
 }
 
@@ -23,6 +25,9 @@ export interface Task {
   completed: boolean;
   notified: boolean;
   recurringInterval: string | null;
+  priority: "low" | "medium" | "high" | "urgent";
+  category: string;
+  snoozedUntil: string | null;
   createdAt: string;
 }
 

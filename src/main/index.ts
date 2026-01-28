@@ -4,6 +4,7 @@ import {
   globalShortcut,
   ipcMain,
   clipboard,
+  nativeImage,
   nativeTheme,
   screen,
   Notification,
@@ -92,6 +93,12 @@ function createWindow() {
     if (showWindowTimeout) {
       clearTimeout(showWindowTimeout);
       showWindowTimeout = null;
+    }
+    // Emit window-hidden event for renderer to reset state
+    // mainWindow is guaranteed to be non-null here since we're inside createWindow()
+    const window = mainWindow;
+    if (window) {
+      window.webContents.send("window-hidden");
     }
   });
 
@@ -285,7 +292,13 @@ function setupIPC() {
 
   // Delete a script
   ipcMain.handle("delete-script", (_, id) => {
-    return database.deleteScript(id);
+    database.deleteScript(id);
+  });
+
+  // Remove tag from all scripts (permanently delete tag)
+  ipcMain.handle("remove-tag-from-all", (_, tag: string) => {
+    const count = database.removeTagFromAllScripts(tag);
+    return { success: true, updatedScripts: count };
   });
 
   // Delete a clip
@@ -293,20 +306,31 @@ function setupIPC() {
     return database.deleteClip(id);
   });
 
-  // Copy to clipboard
-  ipcMain.handle("copy-to-clipboard", async (_, text) => {
+  // Copy to clipboard (text or image)
+  ipcMain.handle("copy-to-clipboard", async (_, data: string | { type: "image"; imageData: string }) => {
     try {
       // Pause watcher
       clipboardWatcher.pause();
       
-      // Write to clipboard
-      clipboard.writeText(text);
+      // Check if it's an image or text
+      if (typeof data === "object" && data.type === "image" && data.imageData) {
+        // Copy image to clipboard
+        const image = nativeImage.createFromDataURL(data.imageData);
+        clipboard.writeImage(image);
+        // Update watcher's last image hash
+        clipboardWatcher.updateLastImage(data.imageData);
+      } else {
+        // Copy text to clipboard
+        const text = typeof data === "string" ? data : "";
+        clipboard.writeText(text);
+        clipboardWatcher.updateLastContent(text);
+      }
+      
       await new Promise(resolve => setTimeout(resolve, 200));
       
       // Tell watcher to ignore the next clipboard change (which is this copy)
       // and reset tracking so next paste is treated as new
       clipboardWatcher.ignoreNext();
-      clipboardWatcher.resetTracking();
       
       // Resume watcher
       clipboardWatcher.resume();
@@ -415,8 +439,16 @@ function setupIPC() {
     return database.getOverdueTaskCount();
   });
 
-  ipcMain.handle("add-task", (_, content: string, title: string, remindAt: string, recurringInterval: string | null = null) => {
-    return database.addTask(content, title, remindAt, recurringInterval);
+  ipcMain.handle("add-task", (
+    _, 
+    content: string, 
+    title: string, 
+    remindAt: string, 
+    recurringInterval: string | null = null,
+    priority: "low" | "medium" | "high" | "urgent" = "medium",
+    category: string = ""
+  ) => {
+    return database.addTask(content, title, remindAt, recurringInterval, priority, category);
   });
 
   ipcMain.handle("complete-task", (_, id: string) => {
@@ -424,8 +456,26 @@ function setupIPC() {
     return true;
   });
 
-  ipcMain.handle("update-task", (_, id: string, title: string, remindAt: string, recurringInterval: string | null = null) => {
-    database.updateTask(id, title, remindAt, recurringInterval);
+  ipcMain.handle("update-task", (
+    _, 
+    id: string, 
+    title: string, 
+    remindAt: string, 
+    recurringInterval: string | null = null,
+    priority: "low" | "medium" | "high" | "urgent" = "medium",
+    category: string = ""
+  ) => {
+    database.updateTask(id, title, remindAt, recurringInterval, priority, category);
+    return true;
+  });
+  
+  ipcMain.handle("snooze-task", (_, id: string, snoozedUntil: string) => {
+    database.snoozeTask(id, snoozedUntil);
+    return true;
+  });
+  
+  ipcMain.handle("clear-snooze", (_, id: string) => {
+    database.clearSnooze(id);
     return true;
   });
 
@@ -469,33 +519,218 @@ function checkDueTasks() {
 
 function calculateNextReminder(currentRemindAt: string, interval: string): string {
   const baseDate = new Date(currentRemindAt);
-  const match = interval.match(/^(\d+)([hmd])$/);
-  if (!match) return baseDate.toISOString();
   
-  const amount = parseInt(match[1]);
-  const unit = match[2];
-  
-  switch (unit) {
-    case "m":
-      baseDate.setMinutes(baseDate.getMinutes() + amount);
-      break;
-    case "h":
-      baseDate.setHours(baseDate.getHours() + amount);
-      break;
-    case "d":
-      baseDate.setDate(baseDate.getDate() + amount);
-      break;
+  // Handle simple intervals: 5m, 1h, 2d, etc.
+  const simpleMatch = interval.match(/^(\d+)([hmd])$/);
+  if (simpleMatch) {
+    const amount = parseInt(simpleMatch[1]);
+    const unit = simpleMatch[2];
+    
+    switch (unit) {
+      case "m":
+        baseDate.setMinutes(baseDate.getMinutes() + amount);
+        break;
+      case "h":
+        baseDate.setHours(baseDate.getHours() + amount);
+        break;
+      case "d":
+        baseDate.setDate(baseDate.getDate() + amount);
+        break;
+    }
+    return baseDate.toISOString();
   }
   
+  // Handle weekly patterns: weekly:mon, weekly:tue, etc.
+  const weeklyMatch = interval.match(/^weekly:([a-z]{3})$/);
+  if (weeklyMatch) {
+    const dayAbbr = weeklyMatch[1].toLowerCase();
+    const dayMap: { [key: string]: number } = {
+      sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6
+    };
+    const targetDay = dayMap[dayAbbr];
+    if (targetDay !== undefined) {
+      const currentDay = baseDate.getDay();
+      let daysToAdd = (targetDay - currentDay + 7) % 7;
+      if (daysToAdd === 0) daysToAdd = 7; // Next week if same day
+      baseDate.setDate(baseDate.getDate() + daysToAdd);
+      return baseDate.toISOString();
+    }
+  }
+  
+  // Handle monthly patterns: monthly:15, monthly:last
+  const monthlyMatch = interval.match(/^monthly:(\d+|last)$/);
+  if (monthlyMatch) {
+    const dayOrLast = monthlyMatch[1];
+    baseDate.setMonth(baseDate.getMonth() + 1);
+    if (dayOrLast === "last") {
+      // Set to last day of month
+      baseDate.setDate(0); // Go to last day of previous month, then add 1 month
+      baseDate.setMonth(baseDate.getMonth() + 1);
+    } else {
+      const day = parseInt(dayOrLast);
+      const lastDayOfMonth = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 0).getDate();
+      baseDate.setDate(Math.min(day, lastDayOfMonth));
+    }
+    return baseDate.toISOString();
+  }
+  
+  // Handle cron expressions: cron:0 9 * * *
+  const cronMatch = interval.match(/^cron:(.+)$/);
+  if (cronMatch) {
+    const cronExpr = cronMatch[1].trim();
+    return calculateNextCronTime(baseDate, cronExpr);
+  }
+  
+  // Default: return current date if pattern not recognized
   return baseDate.toISOString();
+}
+
+/**
+ * Calculate next execution time from a cron expression
+ * Format: minute hour day month dayOfWeek
+ * Supports: *, numbers, ranges, lists, step values
+ */
+function calculateNextCronTime(baseDate: Date, cronExpr: string): string {
+  const parts = cronExpr.trim().split(/\s+/);
+  if (parts.length !== 5) {
+    // Invalid cron expression, return base date + 1 hour
+    baseDate.setHours(baseDate.getHours() + 1);
+    return baseDate.toISOString();
+  }
+
+  const [minute, hour, day, month, dayOfWeek] = parts;
+  let nextDate = new Date(baseDate);
+  nextDate.setSeconds(0, 0); // Reset seconds and milliseconds
+  
+  // Start from 1 minute in the future to avoid immediate execution
+  nextDate.setMinutes(nextDate.getMinutes() + 1);
+  
+  // Try to find next match within the next year
+  const maxIterations = 365 * 24 * 60; // Max iterations to prevent infinite loops
+  let iterations = 0;
+  
+  while (iterations < maxIterations) {
+    iterations++;
+    
+    // Check month
+    if (!matchesCronField(month, nextDate.getMonth() + 1, 1, 12)) {
+      nextDate.setMonth(nextDate.getMonth() + 1);
+      nextDate.setDate(1);
+      nextDate.setHours(0);
+      nextDate.setMinutes(0);
+      continue;
+    }
+    
+    // Check day of month
+    if (!matchesCronField(day, nextDate.getDate(), 1, 31)) {
+      nextDate.setDate(nextDate.getDate() + 1);
+      nextDate.setHours(0);
+      nextDate.setMinutes(0);
+      continue;
+    }
+    
+    // Check day of week (0 = Sunday, 6 = Saturday)
+    if (!matchesCronField(dayOfWeek, nextDate.getDay(), 0, 6)) {
+      nextDate.setDate(nextDate.getDate() + 1);
+      nextDate.setHours(0);
+      nextDate.setMinutes(0);
+      continue;
+    }
+    
+    // Check hour
+    if (!matchesCronField(hour, nextDate.getHours(), 0, 23)) {
+      nextDate.setHours(nextDate.getHours() + 1);
+      nextDate.setMinutes(0);
+      continue;
+    }
+    
+    // Check minute
+    if (!matchesCronField(minute, nextDate.getMinutes(), 0, 59)) {
+      nextDate.setMinutes(nextDate.getMinutes() + 1);
+      continue;
+    }
+    
+    // All fields match!
+    return nextDate.toISOString();
+  }
+  
+  // Fallback: return base date + 1 hour if no match found
+  baseDate.setHours(baseDate.getHours() + 1);
+  return baseDate.toISOString();
+}
+
+/**
+ * Check if a value matches a cron field pattern
+ * Supports: *, numbers, ranges (1-5), lists (1,3,5), step values (asterisk/5, 1-10/2)
+ */
+function matchesCronField(field: string, value: number, min: number, max: number): boolean {
+  // Wildcard matches everything
+  if (field === "*") return true;
+  
+  // Single number
+  const singleMatch = field.match(/^\d+$/);
+  if (singleMatch) {
+    return parseInt(field) === value;
+  }
+  
+  // Range: 1-5
+  const rangeMatch = field.match(/^(\d+)-(\d+)$/);
+  if (rangeMatch) {
+    const start = parseInt(rangeMatch[1]);
+    const end = parseInt(rangeMatch[2]);
+    return value >= start && value <= end;
+  }
+  
+  // Step value: */5 or 0-59/5
+  const stepMatch = field.match(/^(\*|\d+-\d+)\/(\d+)$/);
+  if (stepMatch) {
+    const step = parseInt(stepMatch[2]);
+    if (stepMatch[1] === "*") {
+      // */5 means every 5th value
+      return value % step === 0;
+    } else {
+      // 0-59/5 means every 5th value in range 0-59
+      const rangePart = stepMatch[1];
+      const rangeMatch2 = rangePart.match(/^(\d+)-(\d+)$/);
+      if (rangeMatch2) {
+        const start = parseInt(rangeMatch2[1]);
+        const end = parseInt(rangeMatch2[2]);
+        if (value >= start && value <= end) {
+          return (value - start) % step === 0;
+        }
+      }
+    }
+  }
+  
+  // List: 1,3,5
+  if (field.includes(",")) {
+    const values = field.split(",").map(v => parseInt(v.trim()));
+    return values.includes(value);
+  }
+  
+  // No match
+  return false;
 }
 
 app.whenReady().then(() => {
   // Initialize components
   settings = new Settings();
   database = new Database();
-  clipboardWatcher = new ClipboardWatcher((content) => {
-    database.addClip(content, settings.get("maxClips", 100));
+  clipboardWatcher = new ClipboardWatcher((clipContent) => {
+    if (clipContent.type === "image" && clipContent.imageData) {
+      database.addClip(
+        clipContent.content,
+        settings.get("maxClips", 100),
+        "image",
+        clipContent.imageData
+      );
+    } else {
+      database.addClip(
+        clipContent.content,
+        settings.get("maxClips", 100),
+        "text"
+      );
+    }
     mainWindow?.webContents.send("clip-added");
   });
 

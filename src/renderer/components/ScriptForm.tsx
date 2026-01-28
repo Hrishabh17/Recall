@@ -1,13 +1,15 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import type { Script } from "@/types";
 import { getExpiryOptions, calculateExpiryDate } from "@/lib/utils";
 import { ArrowLeft, Check, FileText, Type, History } from "./Icons";
 import { detectContentType, getContentStats } from "@/lib/contentDetection";
 import { ContentTypeIcon } from "./ContentTypeIcon";
+import { TagInput } from "./TagInput";
 
 interface ScriptFormProps {
   script?: Script | null;
   initialContent?: string;
+  availableTags?: string[];
   onSave: (script: Partial<Script>) => void;
   onCancel: () => void;
 }
@@ -19,12 +21,30 @@ const scriptTypes = [
   { value: "curl", label: "cURL", color: "#F59E0B" },
 ];
 
-export function ScriptForm({ script, initialContent, onSave, onCancel }: ScriptFormProps) {
+export function ScriptForm({ script, initialContent, availableTags = [], onSave, onCancel }: ScriptFormProps) {
   const [title, setTitle] = useState(script?.title ?? "");
   const [content, setContent] = useState(script?.content ?? initialContent ?? "");
   const [type, setType] = useState<Script["type"]>(script?.type ?? "text");
-  const [tags, setTags] = useState(script?.tags ?? "");
+  
+  // Convert comma-separated tags string to array
+  const initialTags = useMemo(() => {
+    if (script?.tags) {
+      return script.tags.split(",").map(t => t.trim()).filter(t => t.length > 0);
+    }
+    return [];
+  }, [script?.tags]);
+  
+  const [tags, setTags] = useState<string[]>(initialTags);
   const [expiry, setExpiry] = useState<string | null>(null);
+  
+  // Update tags when script changes
+  useEffect(() => {
+    if (script?.tags) {
+      setTags(script.tags.split(",").map(t => t.trim()).filter(t => t.length > 0));
+    } else {
+      setTags([]);
+    }
+  }, [script?.tags]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -48,7 +68,7 @@ export function ScriptForm({ script, initialContent, onSave, onCancel }: ScriptF
       title: title.trim(),
       content: content.trim(),
       type,
-      tags: tags.trim(),
+      tags: tags.join(", "), // Convert array back to comma-separated string
       expiresAt: calculateExpiryDate(expiry),
     });
   };
@@ -175,12 +195,11 @@ export function ScriptForm({ script, initialContent, onSave, onCancel }: ScriptF
             <label className="text-[10px] font-medium text-white/60 block mb-2">
               Tags <span className="text-white/30">(optional)</span>
             </label>
-            <input
-              type="text"
-              value={tags}
-              onChange={(e) => setTags(e.target.value)}
+            <TagInput
+              tags={tags}
+              availableTags={availableTags}
+              onChange={setTags}
               placeholder="work, database, api..."
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[10px] text-white placeholder:text-white/30 focus:outline-none focus:border-vault-accent/50 transition-all"
             />
           </div>
         </div>

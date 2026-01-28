@@ -1,4 +1,4 @@
-import type { ListItem } from "@/types";
+import type { ListItem, Script, Task } from "@/types";
 import { detectContentType, getContentStats, formatJson } from "@/lib/contentDetection";
 import { ContentTypeIcon } from "./ContentTypeIcon";
 import { Copy, Check, Save, Trash2, ExternalLink, Wand, Edit, Bell, CheckCircle } from "./Icons";
@@ -13,6 +13,8 @@ interface PreviewPaneProps {
   onRemind?: (item: ListItem) => void;
   onComplete?: (item: ListItem) => void;
   onEditTask?: (item: ListItem) => void;
+  onSnooze?: (item: ListItem, minutes: number) => void;
+  onTagClick?: (tag: string) => void;
   fontSize?: "small" | "medium" | "large";
   filter?: "all" | "clips" | "scripts" | "tasks";
 }
@@ -23,7 +25,7 @@ const contentSizes = {
   large: "text-sm",
 };
 
-export function PreviewPane({ item, onCopy, onPin, onDelete, onEdit, onRemind, onComplete, onEditTask, fontSize = "small", filter = "all" }: PreviewPaneProps) {
+export function PreviewPane({ item, onCopy, onPin, onDelete, onEdit, onRemind, onComplete, onEditTask, onSnooze, onTagClick, fontSize = "small", filter = "all" }: PreviewPaneProps) {
   const contentSize = contentSizes[fontSize];
   const [copied, setCopied] = useState(false);
   const [formattedContent, setFormattedContent] = useState<string | null>(null);
@@ -126,10 +128,18 @@ export function PreviewPane({ item, onCopy, onPin, onDelete, onEdit, onRemind, o
   const isClip = item.type === "clip";
   const isScript = item.type === "script";
   const isTask = item.type === "task";
-  const contentInfo = detectContentType(item.content);
+  
+  // Check if this is an image clip
+  const clipData = isClip ? (item.data as any) : null;
+  const isImageClip = clipData?.type === "image" && clipData?.imageData;
+  
+  const contentInfo = isImageClip 
+    ? { type: "image" as const, label: "Image", color: "#8B5CF6", icon: "image" }
+    : detectContentType(item.content);
   const stats = getContentStats(item.content);
   const displayContent = formattedContent || item.content;
   const canFormat = contentInfo.type === "json";
+  
   // Show Open button for URLs or curl commands
   const content = item.content.trim();
   const hasUrl = /https?:\/\//i.test(content);
@@ -159,29 +169,74 @@ export function PreviewPane({ item, onCopy, onPin, onDelete, onEdit, onRemind, o
           <div className="text-xs font-medium text-white truncate">
             {isClip ? "Clipboard Item" : (item.data as any).title}
           </div>
-          <div className="flex items-center gap-2 mt-0.5">
+          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
             <span 
               className="text-[10px] px-1.5 py-0.5 rounded font-medium"
               style={{ backgroundColor: `${contentInfo.color}15`, color: contentInfo.color }}
             >
               {contentInfo.label}
             </span>
-            <span className="text-[10px] text-white/40">{item.subtitle}</span>
+            {isScript && (item.data as Script).tags && (item.data as Script).tags.trim() && (
+              <>
+                {(item.data as Script).tags.split(",").map((tag: string) => {
+                  const trimmedTag = tag.trim();
+                  if (!trimmedTag) return null;
+                  
+                  // Generate consistent color for tag
+                  const colors = [
+                    { bg: "bg-blue-500/15", text: "text-blue-300", border: "border-blue-500/30" },
+                    { bg: "bg-purple-500/15", text: "text-purple-300", border: "border-purple-500/30" },
+                    { bg: "bg-pink-500/15", text: "text-pink-300", border: "border-pink-500/30" },
+                    { bg: "bg-emerald-500/15", text: "text-emerald-300", border: "border-emerald-500/30" },
+                    { bg: "bg-amber-500/15", text: "text-amber-300", border: "border-amber-500/30" },
+                    { bg: "bg-cyan-500/15", text: "text-cyan-300", border: "border-cyan-500/30" },
+                    { bg: "bg-indigo-500/15", text: "text-indigo-300", border: "border-indigo-500/30" },
+                    { bg: "bg-rose-500/15", text: "text-rose-300", border: "border-rose-500/30" },
+                  ];
+                  let hash = 0;
+                  for (let i = 0; i < trimmedTag.length; i++) {
+                    hash = trimmedTag.charCodeAt(i) + ((hash << 5) - hash);
+                  }
+                  const color = colors[Math.abs(hash) % colors.length];
+                  
+                  return (
+                    <button
+                      key={trimmedTag}
+                      onClick={() => onTagClick?.(trimmedTag)}
+                      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border transition-colors hover:opacity-80 ${color.bg} ${color.text} ${color.border}`}
+                      title={`Filter by ${trimmedTag}`}
+                    >
+                      #{trimmedTag}
+                    </button>
+                  );
+                })}
+              </>
+            )}
+            {!isScript && <span className="text-[10px] text-white/40">{item.subtitle}</span>}
           </div>
         </div>
       </div>
 
       {/* Content Stats Bar */}
       <div className="flex items-center gap-4 px-4 py-2 border-b border-white/[0.05]">
-        <div className="flex items-center gap-1 text-[10px] text-white/40">
-          <span className="text-white/60 font-medium">{stats.chars}</span> chars
-        </div>
-        <div className="flex items-center gap-1 text-[10px] text-white/40">
-          <span className="text-white/60 font-medium">{stats.words}</span> words
-        </div>
-        <div className="flex items-center gap-1 text-[10px] text-white/40">
-          <span className="text-white/60 font-medium">{stats.lines}</span> lines
-        </div>
+        {!isImageClip && (
+          <>
+            <div className="flex items-center gap-1 text-[10px] text-white/40">
+              <span className="text-white/60 font-medium">{stats.chars}</span> chars
+            </div>
+            <div className="flex items-center gap-1 text-[10px] text-white/40">
+              <span className="text-white/60 font-medium">{stats.words}</span> words
+            </div>
+            <div className="flex items-center gap-1 text-[10px] text-white/40">
+              <span className="text-white/60 font-medium">{stats.lines}</span> lines
+            </div>
+          </>
+        )}
+        {isImageClip && (
+          <div className="flex items-center gap-1 text-[10px] text-white/40">
+            <span className="text-white/60 font-medium">{clipData.content}</span>
+          </div>
+        )}
         <div className="flex-1" />
         
         {canFormat && (
@@ -216,11 +271,22 @@ export function PreviewPane({ item, onCopy, onPin, onDelete, onEdit, onRemind, o
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-4">
-        <pre 
-          className={`${contentSize} whitespace-pre-wrap break-words font-mono leading-relaxed text-white/80`}
-        >
-          {displayContent}
-        </pre>
+        {isImageClip && clipData.imageData ? (
+          <div className="flex items-center justify-center h-full">
+            <img 
+              src={clipData.imageData} 
+              alt="Clipboard image"
+              className="max-w-full max-h-full object-contain rounded-lg"
+              style={{ maxHeight: "400px" }}
+            />
+          </div>
+        ) : (
+          <pre 
+            className={`${contentSize} whitespace-pre-wrap break-words font-mono leading-relaxed text-white/80`}
+          >
+            {displayContent}
+          </pre>
+        )}
       </div>
 
       {/* Actions */}

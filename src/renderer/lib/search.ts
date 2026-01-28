@@ -43,26 +43,55 @@ export function createSearchIndex(items: ListItem[]): Fuse<ListItem> {
 function applyFilters(items: ListItem[], filters: SearchFilters): ListItem[] {
   let filtered = items;
 
-  // Script type filter - applies to ALL items based on detected content type
-  if (filters && filters.scriptType) {
+  // Script type filter - applies to ALL items based on detected content type (supports multiple types)
+  if (filters && filters.scriptTypes && filters.scriptTypes.length > 0) {
     filtered = filtered.filter((item) => {
       // Detect content type from the item's content
       const detected = detectContentType(item.content);
       
-      // Map filter scriptType to content types
-      switch (filters.scriptType) {
-        case "sql":
-          return detected.type === "sql";
-        case "bash":
-          return detected.type === "bash";
-        case "curl":
-          // cURL commands are usually URLs or bash commands
-          return detected.type === "url" || detected.type === "bash";
-        case "text":
-          return detected.type === "text";
-        default:
-          return true;
+      // Map filter scriptTypes to content types
+      return filters.scriptTypes!.some(selectedType => {
+        switch (selectedType) {
+          case "sql":
+            return detected.type === "sql";
+          case "bash":
+            return detected.type === "bash";
+          case "curl":
+            // cURL commands are usually URLs or bash commands
+            return detected.type === "url" || detected.type === "bash";
+          case "text":
+            return detected.type === "text";
+          case "json":
+            return detected.type === "json";
+          case "url":
+            return detected.type === "url";
+          case "code":
+            return detected.type === "code";
+          case "email":
+            return detected.type === "email";
+          case "path":
+            return detected.type === "path";
+          default:
+            return false;
+        }
+      });
+    });
+  }
+
+  // Tag filter - applies to scripts only (supports multiple tags - AND logic)
+  if (filters && filters.tags && filters.tags.length > 0) {
+    filtered = filtered.filter((item) => {
+      if (item.type === "script") {
+        const script = item.data as Script;
+        if (script.tags) {
+          const itemTags = script.tags.split(",").map(t => t.trim().toLowerCase());
+          // All selected tags must be present in the script (AND logic)
+          return filters.tags!.every(selectedTag => 
+            itemTags.includes(selectedTag.toLowerCase())
+          );
+        }
       }
+      return false;
     });
   }
 
@@ -91,7 +120,7 @@ export function searchItems(
   }
 
   // Apply advanced filters if provided and has active filters
-  if (filters && (filters.scriptType || filters.contentType || filters.tag || filters.dateRange)) {
+  if (filters && ((filters.scriptTypes && filters.scriptTypes.length > 0) || filters.contentType || (filters.tags && filters.tags.length > 0) || filters.dateRange)) {
     results = applyFilters(results, filters);
   }
 

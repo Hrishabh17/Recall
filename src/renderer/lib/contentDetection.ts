@@ -16,7 +16,7 @@ export interface ContentInfo {
   icon: string;
 }
 
-const contentTypes: Record<ContentType, Omit<ContentInfo, "type">> = {
+export const contentTypes: Record<ContentType, Omit<ContentInfo, "type">> = {
   sql: { label: "SQL", color: "#60A5FA", icon: "database" },
   json: { label: "JSON", color: "#34D399", icon: "braces" },
   url: { label: "URL", color: "#A78BFA", icon: "link" },

@@ -39,7 +39,7 @@ export function SearchBar({ value, onChange, placeholder = "Search...", resultCo
   }, []);
 
   return (
-    <div className="px-4 pt-4 pb-2">
+    <div className="w-full">
       <div className="relative">
         {/* Search icon */}
         <div className="absolute left-3.5 top-1/2 -translate-y-1/2">

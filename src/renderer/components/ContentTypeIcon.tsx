@@ -1,13 +1,20 @@
 import type { ContentType } from "@/lib/contentDetection";
 
 interface ContentTypeIconProps {
-  type: ContentType;
+  type: ContentType | "image";
   className?: string;
   style?: React.CSSProperties;
 }
 
 export function ContentTypeIcon({ type, className = "w-4 h-4", style }: ContentTypeIconProps) {
-  const icons: Record<ContentType, JSX.Element> = {
+  const icons: Record<ContentType | "image", JSX.Element> = {
+    image: (
+      <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+        <circle cx="8.5" cy="8.5" r="1.5" />
+        <polyline points="21 15 16 10 5 21" />
+      </svg>
+    ),
     sql: (
       <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
         <ellipse cx="12" cy="5" rx="9" ry="3" />
@@ -59,5 +66,5 @@ export function ContentTypeIcon({ type, className = "w-4 h-4", style }: ContentT
     ),
   };
 
-  return icons[type] || icons.text;
+  return icons[type as ContentType | "image"] || icons.text;
 }
