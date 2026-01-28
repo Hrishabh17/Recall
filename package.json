@@ -1,7 +1,7 @@
 {
   "name": "recall",
   "productName": "Recall",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "AI-powered clipboard manager with smart search and reminders",
   "main": "dist/main/index.js",
   "scripts": {
