@@ -1,6 +1,8 @@
 # Recall
 
 A Raycast-like clipboard manager and script vault for developers.
+![Recall](./static/recall_1.png)
+
 
 ## Features
 
