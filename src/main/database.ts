@@ -35,7 +35,9 @@ export class Database {
   private db: BetterSqlite3.Database;
 
   constructor() {
-    const dbPath = path.join(app.getPath("userData"), "scriptvault.db");
+    // Store database in recall directory (not scriptvault)
+    // app.getPath("userData") returns ~/Library/Application Support/recall/ on macOS
+    const dbPath = path.join(app.getPath("userData"), "recall.db");
     this.db = new BetterSqlite3(dbPath);
     this.init();
   }

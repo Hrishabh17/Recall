@@ -44,11 +44,66 @@ export function PreviewPane({ item, onCopy, onPin, onDelete, onEdit, onRemind, o
     }
   }, [item, formattedContent]);
 
-  const handleOpenUrl = useCallback(() => {
-    if (!item) return;
-    const url = item.content.trim();
-    if (url.startsWith("http")) {
-      window.open(url, "_blank");
+  const handleOpenUrl = useCallback(async () => {
+    if (!item) {
+      console.warn("No item to open URL from");
+      return;
+    }
+    
+    let url = item.content.trim();
+    console.log("Original content:", url);
+    
+    // Extract URL from content (might be a curl command or just a URL)
+    let extractedUrl: string | null = null;
+    
+    // Check if it's a direct URL
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      extractedUrl = url;
+    } else if (url.toLowerCase().startsWith("curl")) {
+      // Extract URL from curl command
+      // Match patterns like: curl "https://..." or curl https://... or curl -X GET "https://..."
+      const patterns = [
+        /curl\s+.*?["']?(https?:\/\/[^\s"']+)/i,
+        /(https?:\/\/[^\s"']+)/i, // Fallback: any URL in the content
+      ];
+      
+      for (const pattern of patterns) {
+        const match = url.match(pattern);
+        if (match) {
+          extractedUrl = match[1] || match[0];
+          break;
+        }
+      }
+    } else {
+      // Try to find any URL in the content
+      const urlMatch = url.match(/(https?:\/\/[^\s"']+)/i);
+      if (urlMatch) {
+        extractedUrl = urlMatch[1] || urlMatch[0];
+      }
+    }
+    
+    if (!extractedUrl) {
+      console.warn("Could not extract URL from content:", url);
+      return;
+    }
+    
+    // Clean up URL (remove quotes, trailing characters)
+    extractedUrl = extractedUrl.replace(/["']/g, "").trim();
+    
+    // Remove trailing characters that might be part of the command
+    extractedUrl = extractedUrl.replace(/[;|&<>'"`\s]+$/, "");
+    
+    console.log("Extracted URL:", extractedUrl);
+    
+    // Open in default browser (not in-app browser)
+    try {
+      const result = await window.api.openExternalUrl(extractedUrl);
+      console.log("Open URL result:", result);
+      if (!result) {
+        console.error("Failed to open URL - returned false");
+      }
+    } catch (error) {
+      console.error("Failed to open URL:", error);
     }
   }, [item]);
 
@@ -75,7 +130,16 @@ export function PreviewPane({ item, onCopy, onPin, onDelete, onEdit, onRemind, o
   const stats = getContentStats(item.content);
   const displayContent = formattedContent || item.content;
   const canFormat = contentInfo.type === "json";
-  const canOpen = contentInfo.type === "url";
+  // Show Open button for URLs or curl commands
+  const content = item.content.trim();
+  const hasUrl = /https?:\/\//i.test(content);
+  const isCurl = content.toLowerCase().startsWith("curl");
+  const canOpen = contentInfo.type === "url" || hasUrl || isCurl;
+  
+  // Debug logging
+  if (canOpen) {
+    console.log("Open button should be visible. Content:", content.substring(0, 50));
+  }
 
   return (
     <div className="flex-1 flex flex-col bg-white/[0.02] rounded-xl m-2 ml-0 overflow-hidden border border-white/[0.05]">
@@ -135,8 +199,14 @@ export function PreviewPane({ item, onCopy, onPin, onDelete, onEdit, onRemind, o
         )}
         {canOpen && (
           <button
-            onClick={handleOpenUrl}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              console.log("Open button clicked");
+              handleOpenUrl();
+            }}
             className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium text-white/50 hover:text-white/70 hover:bg-white/[0.06] transition-colors"
+            title={`Open ${item.content.trim().match(/(https?:\/\/[^\s"']+)/i)?.[0] || "URL"}`}
           >
             <ExternalLink className="w-3 h-3" />
             Open

@@ -4,6 +4,7 @@ import { useItems } from "@/hooks/useItems";
 import { useSettings } from "@/hooks/useSettings";
 import { SearchBar } from "@/components/SearchBar";
 import { FilterBar } from "@/components/FilterBar";
+import { SearchFilters } from "@/components/SearchFilters";
 import { ItemList } from "@/components/ItemList";
 import { PreviewPane } from "@/components/PreviewPane";
 import { ScriptForm } from "@/components/ScriptForm";
@@ -29,6 +30,9 @@ export default function App() {
     setSearchQuery,
     filter,
     setFilter,
+    searchFilters,
+    setSearchFilters,
+    availableTags,
     deleteItem,
     saveScript,
     addTask,
@@ -76,13 +80,21 @@ export default function App() {
       setSelectedIndex(0);
       setSearchQuery("");
       
+      // Reset all filters when window opens
+      setSearchFilters({
+        contentType: null,
+        tag: null,
+        scriptType: null,
+        dateRange: null,
+      });
+      
       // Load overdue count
       const count = await window.api.getOverdueCount();
       setOverdueCount(count);
     });
 
     return unsubscribe;
-  }, [setFilter, setSearchQuery]);
+  }, [setFilter, setSearchQuery, setSearchFilters]);
 
   // Load overdue count on mount and periodically
   useEffect(() => {
@@ -328,6 +340,15 @@ export default function App() {
         placeholder="Search clipboard & scripts..."
         resultCount={searchQuery ? items.length : undefined}
       />
+
+      {/* Advanced Search Filters */}
+      <div className="px-4 pb-2">
+        <SearchFilters
+          filters={searchFilters}
+          onChange={setSearchFilters}
+          availableTags={availableTags}
+        />
+      </div>
 
       {/* Filter + Actions Bar */}
       <div className="flex items-center justify-between px-4 pb-2">

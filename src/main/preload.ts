@@ -36,6 +36,7 @@ const api = {
   hideWindow: () => ipcRenderer.invoke("hide-window"),
   lowerWindowLevel: () => ipcRenderer.invoke("lower-window-level"),
   restoreWindowLevel: () => ipcRenderer.invoke("restore-window-level"),
+  openExternalUrl: (url: string) => ipcRenderer.invoke("open-external-url", url),
   
   // Events
   onClipAdded: (callback: () => void) => {

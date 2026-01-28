@@ -7,6 +7,7 @@ import {
   nativeTheme,
   screen,
   Notification,
+  shell,
 } from "electron";
 import * as path from "path";
 import { Database } from "./database";
@@ -18,6 +19,10 @@ let database: Database;
 let clipboardWatcher: ClipboardWatcher;
 let settings: Settings;
 let isContentReady = false;
+let isShowingWindow = false; // Track if we're in the process of showing the window
+let showWindowTimeout: NodeJS.Timeout | null = null; // Track pending show operations
+let isToggling = false; // Prevent blur handler from interfering with toggle
+let lastToggleTime = 0; // Track when we last toggled to prevent race conditions
 
 // Only dev mode when NOT packaged (regardless of NODE_ENV)
 const isDev = !app.isPackaged;
@@ -52,19 +57,50 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
   }
 
-  // Track when content is fully loaded
-  mainWindow.webContents.once("did-finish-load", () => {
-    // Wait a bit for React to render
-    setTimeout(() => {
-      isContentReady = true;
-    }, 500);
+  /**
+   * Track when content is fully loaded
+   * Multiple checks to ensure React is fully rendered before marking as ready
+   */
+  const markContentReady = () => {
+    isContentReady = true;
+  };
+
+  // Fast check: DOM ready
+  mainWindow.webContents.once("dom-ready", () => {
+    // Wait for React to hydrate and render (reduced from 400ms)
+    setTimeout(markContentReady, 150);
   });
 
+  // Slower check: Full page load
+  mainWindow.webContents.once("did-finish-load", () => {
+    // Wait a bit longer for React to fully render (reduced from 500ms)
+    setTimeout(markContentReady, 200);
+  });
+
+  // Reset ready flag if page fails to load
   mainWindow.webContents.on("did-fail-load", () => {
     isContentReady = false;
+    console.error("Failed to load window content");
+  });
+  
+  // Reset content ready flag when window is hidden
+  // This ensures content reloads properly on next open
+  mainWindow.on("hide", () => {
+    isContentReady = false;
+    isShowingWindow = false; // Reset showing flag
+    // Cancel any pending show operations
+    if (showWindowTimeout) {
+      clearTimeout(showWindowTimeout);
+      showWindowTimeout = null;
+    }
   });
 
   mainWindow.on("blur", () => {
+    // Don't hide if we're in the middle of toggling or just toggled (prevents race condition)
+    const timeSinceLastToggle = Date.now() - lastToggleTime;
+    if (isToggling || timeSinceLastToggle < 200) {
+      return;
+    }
     if (mainWindow) {
       mainWindow.hide();
     }
@@ -82,20 +118,56 @@ function registerShortcut() {
   globalShortcut.unregisterAll();
   
   const success = globalShortcut.register(shortcut, () => {
-    if (mainWindow) {
-      if (mainWindow.isVisible()) {
-        mainWindow.hide();
-      } else {
-        // Get the screen where the cursor currently is
-        const cursorPoint = screen.getCursorScreenPoint();
-        const currentDisplay = screen.getDisplayNearestPoint(cursorPoint);
-        const { x, y, width, height } = currentDisplay.workArea;
+    if (!mainWindow) {
+      console.error("Main window not initialized");
+      return;
+    }
+
+    // Update toggle time and set flag to prevent blur handler from interfering
+    lastToggleTime = Date.now();
+    isToggling = true;
+    
+    // Check window visibility state - use multiple checks for reliability
+    const isCurrentlyVisible = mainWindow.isVisible() && !mainWindow.isMinimized();
+    const shouldHide = isCurrentlyVisible || isShowingWindow;
+    
+    // Toggle visibility: if visible OR in the process of showing, hide it
+    if (shouldHide) {
+      // Cancel any pending show operations
+      if (showWindowTimeout) {
+        clearTimeout(showWindowTimeout);
+        showWindowTimeout = null;
+      }
+      isShowingWindow = false;
+      // Force hide the window immediately
+      mainWindow.hide();
+      // Double-check and hide again if still visible (sometimes needed)
+      setTimeout(() => {
+        if (mainWindow && mainWindow.isVisible()) {
+          mainWindow.hide();
+        }
+        isToggling = false;
+      }, 50);
+      return;
+    }
+
+    // Show window: position it at the center of the screen
+    try {
+        // Get the primary display (or display where cursor is)
+        const primaryDisplay = screen.getPrimaryDisplay();
+        const { width: screenWidth, height: screenHeight } = primaryDisplay.workAreaSize;
+        const { x: displayX, y: displayY } = primaryDisplay.workArea;
         
-        // Position window on the screen where cursor is
-        mainWindow.setPosition(
-          x + Math.floor((width - 900) / 2),
-          y + Math.floor(height * 0.15)
-        );
+        // Window dimensions
+        const windowWidth = 900;
+        const windowHeight = 560;
+        
+        // Calculate center position
+        const centerX = displayX + Math.floor((screenWidth - windowWidth) / 2);
+        const centerY = displayY + Math.floor((screenHeight - windowHeight) / 2);
+        
+        // Position window at center of screen
+        mainWindow.setPosition(centerX, centerY);
         
         // Make window appear on all spaces/desktops
         mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -103,43 +175,83 @@ function registerShortcut() {
         // Use pop-up-menu level to appear above all apps
         mainWindow.setAlwaysOnTop(true, "pop-up-menu", 1);
         
-        // Only show if content is ready, otherwise wait for it
-        if (isContentReady && !mainWindow.webContents.isLoading()) {
-          mainWindow.show();
-          mainWindow.moveTop();
-          mainWindow.focus();
-          mainWindow.webContents.send("window-shown");
-        } else {
-          // Wait for content to be ready
-          const showWhenReady = () => {
-            if (isContentReady && !mainWindow?.webContents.isLoading()) {
-              if (mainWindow) {
+        // CRITICAL: Only show window when content is FULLY ready
+        // This prevents blank screen from appearing
+        // Also track that we're showing to prevent duplicate shows
+        isShowingWindow = true;
+        
+        const showWindowWhenReady = () => {
+          // Check if user canceled (pressed shortcut again)
+          if (!isShowingWindow || !mainWindow) {
+            return;
+          }
+          
+          // Check if content is ready
+          const contentReady = isContentReady && !mainWindow.webContents.isLoading();
+          const pageLoaded = mainWindow.webContents.getURL() && !mainWindow.webContents.isLoading();
+          
+          if (contentReady) {
+            // Content is fully ready - safe to show
+            if (isShowingWindow && mainWindow) {
+              mainWindow.show();
+              mainWindow.moveTop();
+              mainWindow.focus();
+              mainWindow.webContents.send("window-shown");
+              isShowingWindow = false;
+            }
+          } else if (pageLoaded) {
+            // Page loaded but React might not be ready - wait a bit more (reduced from 600ms)
+            showWindowTimeout = setTimeout(() => {
+              if (isShowingWindow && mainWindow) {
+                // Mark as ready and show
+                isContentReady = true;
                 mainWindow.show();
                 mainWindow.moveTop();
                 mainWindow.focus();
                 mainWindow.webContents.send("window-shown");
+                isShowingWindow = false;
+                showWindowTimeout = null;
               }
-            } else {
-              setTimeout(showWhenReady, 100);
-            }
-          };
-          
-          // If already loaded, wait a bit for React
-          if (!mainWindow.webContents.isLoading()) {
-            setTimeout(() => {
-              isContentReady = true;
-              showWhenReady();
-            }, 1000);
+            }, 200); // Reduced wait time for React to render
           } else {
-            mainWindow.webContents.once("did-finish-load", () => {
-              setTimeout(() => {
-                isContentReady = true;
-                showWhenReady();
-              }, 1000);
-            });
+            // Page still loading - wait for it
+            const checkReady = () => {
+              if (!isShowingWindow || !mainWindow) {
+                return; // User canceled
+              }
+              
+              if (mainWindow.webContents.isLoading()) {
+                showWindowTimeout = setTimeout(checkReady, 30); // Reduced polling interval from 50ms
+              } else {
+                // Page loaded, wait for React (reduced from 600ms)
+                showWindowTimeout = setTimeout(() => {
+                  if (isShowingWindow && mainWindow) {
+                    isContentReady = true;
+                    mainWindow.show();
+                    mainWindow.moveTop();
+                    mainWindow.focus();
+                    mainWindow.webContents.send("window-shown");
+                    isShowingWindow = false;
+                    showWindowTimeout = null;
+                  }
+                }, 200); // Reduced wait time
+              }
+            };
+            checkReady();
           }
-        }
-      }
+        };
+        
+        // Start checking for content readiness
+        showWindowWhenReady();
+        
+        // Reset toggling flag after window is shown
+        setTimeout(() => {
+          isToggling = false;
+        }, 500);
+    } catch (error) {
+      console.error("Error showing window:", error);
+      isToggling = false;
+      isShowingWindow = false;
     }
   });
 
@@ -263,6 +375,29 @@ function setupIPC() {
   // Hide window
   ipcMain.handle("hide-window", () => {
     mainWindow?.hide();
+  });
+
+  // Open URL in default browser (not in-app browser)
+  ipcMain.handle("open-external-url", (_, url: string) => {
+    try {
+      if (!url || typeof url !== "string") {
+        console.error("Invalid URL provided:", url);
+        return false;
+      }
+      
+      // Ensure URL has a protocol
+      let finalUrl = url.trim();
+      if (!finalUrl.startsWith("http://") && !finalUrl.startsWith("https://")) {
+        finalUrl = "https://" + finalUrl;
+      }
+      
+      console.log("Opening URL in browser:", finalUrl);
+      shell.openExternal(finalUrl);
+      return true;
+    } catch (error) {
+      console.error("Error opening URL:", error);
+      return false;
+    }
   });
 
   // Clear all clips

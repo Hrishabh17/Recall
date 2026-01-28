@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import type { Clip, Script, Task, ListItem } from "@/types";
 import { clipsToListItems, scriptsToListItems, tasksToListItems } from "@/lib/utils";
 import { createSearchIndex, searchItems } from "@/lib/search";
+import type { SearchFilters } from "@/components/SearchFilters";
 import type Fuse from "fuse.js";
 
 type Filter = "all" | "clips" | "scripts" | "tasks";
@@ -13,6 +14,12 @@ export function useItems() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
+  const [searchFilters, setSearchFilters] = useState<SearchFilters>({
+    contentType: null,
+    tag: null,
+    scriptType: null,
+    dateRange: null,
+  } as SearchFilters);
   const [searchIndex, setSearchIndex] = useState<Fuse<ListItem> | null>(null);
 
   const loadItems = useCallback(async () => {
@@ -72,10 +79,26 @@ export function useItems() {
     setSearchIndex(createSearchIndex(allItems));
   }, [allItems]);
 
+  // Extract available tags from scripts for filter UI
+  const availableTags = useMemo(() => {
+    const tagSet = new Set<string>();
+    scripts.forEach((script) => {
+      if (script.tags) {
+        script.tags
+          .split(",")
+          .map((t) => t.trim())
+          .filter((t) => t.length > 0)
+          .forEach((tag) => tagSet.add(tag));
+      }
+    });
+    return Array.from(tagSet).sort();
+  }, [scripts]);
+
   const filteredItems = useMemo(() => {
     if (!searchIndex) return allItems;
-    return searchItems(searchIndex, searchQuery);
-  }, [searchIndex, searchQuery, allItems]);
+    // Apply search query and filters
+    return searchItems(searchIndex, searchQuery, searchFilters);
+  }, [searchIndex, searchQuery, searchFilters, allItems]);
 
   const copyItem = useCallback(async (item: ListItem) => {
     console.log("[RENDERER] Copy called for item:", item.id, "content length:", item.content.length);
@@ -138,6 +161,9 @@ export function useItems() {
     setSearchQuery,
     filter,
     setFilter,
+    searchFilters,
+    setSearchFilters,
+    availableTags,
     copyItem,
     deleteItem,
     pinClip,

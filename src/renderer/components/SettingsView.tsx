@@ -394,7 +394,7 @@ export function SettingsView({ settings, onSave, onCancel }: SettingsViewProps) 
       {/* Footer */}
       <div className="px-4 py-3 border-t border-white/[0.06]">
         <div className="flex items-center justify-between text-[9px] text-white/30">
-          <span>ScriptVault v0.1.0</span>
+          <span>Recall v0.1.0</span>
           <span>Made with ♥</span>
         </div>
       </div>
