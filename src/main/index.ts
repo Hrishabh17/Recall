@@ -102,6 +102,11 @@ function createWindow() {
     }
   });
 
+  // Re-register shortcut when window is shown (handles cases where shortcut was lost)
+  mainWindow.on("show", () => {
+    verifyShortcut();
+  });
+
   mainWindow.on("blur", () => {
     // Don't hide if we're in the middle of toggling or just toggled (prevents race condition)
     const timeSinceLastToggle = Date.now() - lastToggleTime;
@@ -121,6 +126,11 @@ function createWindow() {
 
 function registerShortcut() {
   const shortcut = settings.get("shortcut", "CommandOrControl+Shift+V");
+  
+  // Check if shortcut is already registered
+  if (globalShortcut.isRegistered(shortcut)) {
+    return; // Already registered, don't re-register
+  }
   
   globalShortcut.unregisterAll();
   
@@ -264,6 +274,18 @@ function registerShortcut() {
 
   if (!success) {
     console.error("Failed to register shortcut:", shortcut);
+  } else {
+    console.log("Global shortcut registered:", shortcut);
+  }
+}
+
+// Verify and re-register shortcut if needed
+function verifyShortcut() {
+  const shortcut = settings.get("shortcut", "CommandOrControl+Shift+V");
+  
+  if (!globalShortcut.isRegistered(shortcut)) {
+    console.log("Shortcut was unregistered, re-registering...");
+    registerShortcut();
   }
 }
 
@@ -757,10 +779,16 @@ app.whenReady().then(() => {
   // Also check immediately
   setTimeout(checkDueTasks, 2000);
 
+  // Verify shortcut is still registered every 30 seconds
+  // This ensures it stays active even after system sleep or inactivity
+  setInterval(verifyShortcut, 30000);
+
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
+    // Re-register shortcut when app is activated (e.g., after system sleep)
+    verifyShortcut();
   });
 });
 
